@@ -7,6 +7,13 @@ Created on Tue Mar 27 10:37:01 2018
 
 import numpy as np
 import pandas as pd
+import scipy as sp
+
+# plot 3D surface
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.ticker import LinearLocator, FormatStrFormatter
 
 def discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS):
     # ##########The discretized Goodwin oscillator ODE ########################
@@ -31,14 +38,15 @@ def discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS):
     
     # iteratively generate the states of x
     for s in range(nosOfS):
-        print('number of iterations:{0}'.format(s))
+        #print('number of iterations:{0}'.format(s))
         x_old = x[-1]
-        x_new = x_old[0] + deltaS*(a1/(1.0+a2*np.power(x_old[-1],rho))-alpha*x_old[0])
+        x_new = x_old[0] + deltaS*(a1/(1.0+a2*np.power(x_old[-1],rho))\
+                     -alpha*x_old[0])
         #print(x_new)
         for j in range(1,g):
             xj = x_old[j] + deltaS*(kappa[j-1]*x_old[j-1] - alpha*x_old[j])
             x_new = np.append(x_new,xj)
-        print(x_new)
+        #print(x_new)
         x = np.append(x,np.array(x_new).reshape((1,g)),axis=0)
     return x
 
@@ -54,6 +62,103 @@ def plot_trajectory_points(x,observ):
     ax = pd.DataFrame(x).plot()
     pd.DataFrame(observ).plot(ax=ax,marker='o')
     
+def lognormal(y,x,sigma):
+    # Compute the log Normal distribution element-wisely. x,y are arrays
+    # x: the mean
+    # y: the Normal random variable
+    m,n=np.shape(y)
+    deltaYX2 = np.power(y-x,2)
+    logy = -0.5*m*n*np.log(2*np.pi*np.power(sigma,2))\
+            -0.5*(1/np.power(sigma,2))*np.sum(deltaYX2)
+    return logy
+    
+def loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
+                  sigma,startTimeToObserv):
+    # To compute likelihood, we need to compute the ODE trajectory.  
+    # The observed data must be corresponding to `x'.
+    # The ODE trajectory is computed given these parameters.
+    # startTimeToObserv: the assumed time to observe the data
+    # Note: x is a S*d matrix where S is the time steps of discretization, and
+    #       d is the number of latent variables.
+    # We assume only `a' number of variables - nosOfObserv - are observed.
+    x = discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS)
+    xobserved = x[startTimeToObserv:,0:nosOfObserv]
+    observ = observ[startTimeToObserv:,0:nosOfObserv]
+    logy = lognormal(observ,xobserved,sigma)
+    return logy
+
+def loggamma(x,alpha,beta):
+    # Compute log Gamma distribution given parameters shape alpha and rate beta
+    # x is positive
+    logx = alpha*np.log(beta) + (alpha-1.0)*np.log(x) - beta*x \
+            - np.log(sp.special.gamma(alpha))
+    return np.sum(logx)
+
+def listflatten(alist):
+    # flatten sublist in list
+    return [item for sublist in alist for item in sublist]
+
+def conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,kappa=[2.0,1.0],\
+                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
+    # this function only calculate the conditional posterior of two parameters
+    # I should write a clever code to vary these parameters
+    # currently we only vary a1 and a2
+    
+    kappa = np.array(kappa)
+    
+    # log likelihood
+    logll = loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
+                  sigma,startTimeToObserv)
+    
+    # log prior
+    param1 = a1
+    param2 = kappa[1]
+    parameters = np.array([param1,param2])
+    logprior = loggamma(parameters,gamma_shape,gamma_rate)
+    # compute the conditional posterior
+    return logll
+
+def surface_conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,\
+                                 kappa=[2.0,1.0],\
+                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
+    # compute log(p(a1,a2|....)) whene varying a1 and a2
+    a1_list = list(np.arange(0.1,5,0.1))
+    a2_list = list(np.arange(0.1,5,0.1))
+    a1_grid = np.zeros((len(a2_list),len(a1_list)))
+    a2_grid = np.zeros((len(a2_list),len(a1_list)))
+    y_grid = np.zeros((len(a2_list),len(a1_list)))
+    for i,a1 in enumerate(a1_list):
+        for j,a2 in enumerate(a2_list):
+            a1_grid[j][i] = a1
+            a2_grid[j][i] = a2
+            logpost = conditionalPosterior(observ,x0,a1=a1,a2=3.0,alpha=0.5,\
+                                           rho=10.0,kappa=[2.0,a2],\
+                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
+            y_grid[j][i] = logpost
+    return a1_grid,a2_grid,y_grid
+
+def plot_surface(a1_grid,a2_grid,y_grid):
+    fig = plt.figure()
+    ax = fig.gca(projection='3d')
+
+    # Plot the surface.
+    surf = ax.plot_surface(a1_grid,a2_grid,y_grid, cmap=cm.coolwarm,
+                           linewidth=0, antialiased=False)
+    
+    # Customize the z axis.
+    #ax.set_zlim(-1.01, 1.01)
+    ax.zaxis.set_major_locator(LinearLocator(10))
+    ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
+    
+    # Add a color bar which maps values to colors.
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+    
+    plt.show()
+    
+################################################################
 # model parameters
 a1 = 1.0
 a2 = 3.0
@@ -68,9 +173,29 @@ x0 = np.zeros(g)
 nosOfS = 81
 deltaS = 1.0
 x = discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS)
-
-plot_trajectory(x)
+#plot_trajectory(x)
 
 observ = generate_observations(x,sigma)
+#plot_trajectory_points(x,observ[:,0:2])
 
-plot_trajectory_points(x,observ[:,0:2])
+nosOfObserv = 2
+startTimeToObserv = 40
+logy = loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,\
+                     nosOfObserv,sigma,startTimeToObserv)
+
+parameters = [[a1],[a2],kappa.tolist(),[alpha]]
+parameters = np.array(listflatten(parameters))
+a = 2.0
+b = 1.0
+logx = loggamma(parameters,a,b)
+
+logpost = conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,kappa=[2.0,1.0],\
+                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
+
+a1_grid,a2_grid,y_grid = surface_conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,\
+                                 kappa=[2.0,1.0],\
+                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
+
+plot_surface(a1_grid,a2_grid,y_grid)
