@@ -8,6 +8,8 @@ Created on Tue Mar 27 10:37:01 2018
 import numpy as np
 import pandas as pd
 import scipy as sp
+import argparse
+import copy
 
 # plot 3D surface
 from mpl_toolkits.mplot3d import Axes3D
@@ -15,7 +17,50 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.ticker import LinearLocator, FormatStrFormatter
 
-def discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS):
+def get_arguments():
+    parser = argparse.ArgumentParser(description='Markov chain Monte Carlo\
+                                     methods for inferring parameters\
+                                     in the Goodwin scillator ODE.\
+                                     The distribution of them is highly multi-mode')
+    parser.add_argument('--ode_parameters', \
+                        default=[10.0,1.0,3.0,0.5,2.0,1.0,1.0],
+                        help='the parameters for Goodwin scillator ODE\
+                        in the order: rho,a1,a2,alpha,k1,k2,...')
+    parser.add_argument('--nosOfS',
+                        type=int,
+                        default=81,
+                        help='Number of steps for updating ode')
+    parser.add_argument('--deltaS',
+                        type=float,
+                        default=1.0,
+                        help='Step size for descretizing ODE')
+    parser.add_argument('--sigma',
+                        type=float,
+                        default=0.1,
+                        help='Noise deviation of likelihood model')
+    parser.add_argument('-target_param_label', default=[4,5], \
+                        help='list of labels of parameters to simulate', \
+                        type=int)
+    parser.add_argument('--startTimeToObserv',
+                        type=int,
+                        default=40,
+                        help='The start time point to generate the observations')
+    parser.add_argument('--nosOfObserv',
+                        type=int,
+                        default=2,
+                        help='Number of latent variable assumed to \
+                        generate observations')
+    parser.add_argument('--gamma_shape',
+                        type=float,
+                        default=2.0,
+                        help='Shape parameter of Gamma distribution')
+    parser.add_argument('--gamma_rate',
+                        type=float,
+                        default=1.0,
+                        help='Rate parameter of Gamma distribution')
+    return parser.parse_args()
+
+def discretize_ode(parameters,x0,nosOfS,deltaS):
     # ##########The discretized Goodwin oscillator ODE ########################
     # x1 represents the concentration of mRNA for a target gene;
     # x2 reresents the corresponding protein product of the gene
@@ -29,6 +74,13 @@ def discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS):
     # a1, a2, alpha, rho: parameters, rho>8
     # kappa: a vector parameter; g=len(kappa)+1: number of species.
     ###########################################################################
+    
+    ## read the parameters
+    rho = parameters[0]
+    a1 = parameters[1]
+    a2 = parameters[2]
+    alpha = parameters[3]
+    kappa = copy.copy(parameters[4:])
     
     # the number of species
     g = len(x0)
@@ -58,6 +110,7 @@ def generate_observations(x,sigma):
     # y ~ Normal(x,sigma^2)
     observation = np.random.normal(x,sigma)
     return observation
+
 def plot_trajectory_points(x,observ):
     ax = pd.DataFrame(x).plot()
     pd.DataFrame(observ).plot(ax=ax,marker='o')
@@ -72,7 +125,7 @@ def lognormal(y,x,sigma):
             -0.5*(1/np.power(sigma,2))*np.sum(deltaYX2)
     return logy
     
-def loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
+def loglikelihood(observ,parameters,x0,nosOfS,deltaS,nosOfObserv,\
                   sigma,startTimeToObserv):
     # To compute likelihood, we need to compute the ODE trajectory.  
     # The observed data must be corresponding to `x'.
@@ -81,7 +134,15 @@ def loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
     # Note: x is a S*d matrix where S is the time steps of discretization, and
     #       d is the number of latent variables.
     # We assume only `a' number of variables - nosOfObserv - are observed.
-    x = discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS)
+    
+    ## read the parameters
+    rho = parameters[0]
+    a1 = parameters[1]
+    a2 = parameters[2]
+    alpha = parameters[3]
+    kappa = copy.copy(parameters[4:])
+    
+    x = discretize_ode(parameters,x0,nosOfS,deltaS)
     xobserved = x[startTimeToObserv:,0:nosOfObserv]
     observ = observ[startTimeToObserv:,0:nosOfObserv]
     logy = lognormal(observ,xobserved,sigma)
@@ -90,7 +151,7 @@ def loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
 def loggamma(x,alpha,beta):
     # Compute log Gamma distribution given parameters shape alpha and rate beta
     # x is positive
-    logx = alpha*np.log(beta) + (alpha-1.0)*np.log(x) - beta*x \
+    logx = alpha*np.log(beta) + (alpha-1.0)*np.log(x) - beta*np.array(x) \
             - np.log(sp.special.gamma(alpha))
     return np.sum(logx)
 
@@ -98,34 +159,47 @@ def listflatten(alist):
     # flatten sublist in list
     return [item for sublist in alist for item in sublist]
 
-def conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,kappa=[2.0,1.0],\
+def conditionalPosterior(observ,x0,parameters,\
                          nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
                          nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
     # this function only calculate the conditional posterior of two parameters
     # I should write a clever code to vary these parameters
     # currently we only vary a1 and a2
     
+    ## read the parameters
+    rho = parameters[0]
+    a1 = parameters[1]
+    a2 = parameters[2]
+    alpha = parameters[3]
+    kappa = copy.copy(parameters[4:])
+    
     kappa = np.array(kappa)
     
     # log likelihood
-    logll = loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,nosOfObserv,\
+    logll = loglikelihood(observ,parameters,x0,nosOfS,deltaS,nosOfObserv,\
                   sigma,startTimeToObserv)
     
     # log prior
-    param1 = a1
-    param2 = kappa[1]
-    parameters = np.array([param1,param2])
-    logprior = loggamma(parameters,gamma_shape,gamma_rate)
+    parameters_gamma = []
+    for index in args.target_param_label:
+        parameters_gamma.append(parameters[index])
+    logprior = loggamma(parameters_gamma,gamma_shape,gamma_rate)
     # compute the conditional posterior
-    return logll
+    return logll+logprior
 
-def surface_conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,\
-                                 kappa=[2.0,1.0],\
+def surface_conditionalPosterior(observ,x0,parameters,\
                          nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
                          nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
+    ## read the parameters
+    rho = parameters[0]
+    a1 = parameters[1]
+    a2 = parameters[2]
+    alpha = parameters[3]
+    kappa = copy.copy(parameters[4:])
+    
     # compute log(p(a1,a2|....)) whene varying a1 and a2
-    a1_list = list(np.arange(0.1,5,0.1))
-    a2_list = list(np.arange(0.1,5,0.1))
+    a1_list = list(np.arange(0.001,5,0.1))
+    a2_list = list(np.arange(0.001,5,0.1))
     a1_grid = np.zeros((len(a2_list),len(a1_list)))
     a2_grid = np.zeros((len(a2_list),len(a1_list)))
     y_grid = np.zeros((len(a2_list),len(a1_list)))
@@ -133,10 +207,13 @@ def surface_conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,\
         for j,a2 in enumerate(a2_list):
             a1_grid[j][i] = a1
             a2_grid[j][i] = a2
-            logpost = conditionalPosterior(observ,x0,a1=a1,a2=3.0,alpha=0.5,\
-                                           rho=10.0,kappa=[2.0,a2],\
-                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
-                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
+            parameters[args.target_param_label[0]] = a1
+            parameters[args.target_param_label[1]] = a2
+            logpost = conditionalPosterior(observ,x0,parameters,\
+                         nosOfS=nosOfS,deltaS=deltaS,\
+                         gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                         nosOfObserv=nosOfObserv,sigma=sigma,\
+                         startTimeToObserv=startTimeToObserv)
             y_grid[j][i] = logpost
     return a1_grid,a2_grid,y_grid
 
@@ -158,6 +235,96 @@ def plot_surface(a1_grid,a2_grid,y_grid):
     
     plt.show()
     
+def plot_contour(X,Y,Z):
+    plt.figure()
+    N = 200
+    CS = plt.contour(X, Y, Z, N)
+    plt.clabel(CS, inline=1, fontsize=10)
+    
+    plt.figure()
+    cs = plt.contourf(X, Y, Z)
+    #fig.colorbar(cs, ax=axs[0], format="%.2f")
+    
+def plot_trajectory(x,y):
+    plt.plot(x,y,'r-',linewidth=2)
+    plt.plot(x[0],y[0],'ko',markersize=10)
+    plt.plot(x[-1],y[-1],'b*',markersize=10)
+    amax = np.max([np.max(x),np.max(y)])
+    plt.xlim(0.0,0.01+amax)
+    plt.ylim(0.0,0.01+amax)
+
+def mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
+                         nosOfSamples=1000,stepsize=0.05):
+    # We only want to simulate two parameters: 
+    #    args.target_param1 and args.target_param2
+    
+    # initializee parameters
+#    parameters[args.target_param1] = np.random.gamma(gamma_shape,gamma_rate)
+#    parameters[args.target_param2] = np.random.gamma(gamma_shape,gamma_rate)
+    
+    # labels of parameters to be updated
+    target_labels = copy.copy(args.target_param_label)
+    
+    # store the initial parameters
+    old_params = copy.copy(parameters)
+    
+    # stepsize
+    #stepsize = 0.05
+    
+    # the old log posterior
+    logpost_old = conditionalPosterior(observ,x0,old_params,\
+                         nosOfS=nosOfS,deltaS=deltaS,\
+                         gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                         nosOfObserv=nosOfObserv,sigma=sigma,\
+                         startTimeToObserv=startTimeToObserv)
+    for isamp in range(nosOfSamples):
+        # propose a new state for these parameters
+        #print(old_params)
+        
+        proposed_state = copy.copy(old_params)
+        jacobian_old = 0.0
+        jacobian_new = 0.0
+        #print(old_params)
+        for label in target_labels:
+            # Note: we use a function to define the proposals because the 
+            # parameters have to be positive so param=exp(epsilon) 
+            # where we instead draw samples for epsilon~q(epsilon_new|epsilon_old)
+            # where epsilon=log(param). So epsilon is a symmetric Gaussian which
+            # could be cancelled when computing acceptance probability, 
+            # but we still need to compute Jacobian=1/|param|
+            # Therefore r=log(p(param_new))-log(p(param_old))+log(1/|param_old|)
+            #             -log(1/|param_new|)
+            epsilon = np.random.normal(loc=np.log(old_params[label]),scale=stepsize)
+            proposed_state[label] = np.exp(epsilon)
+            jacobian_old = jacobian_old - np.log(np.abs(old_params[label]))
+            jacobian_new = jacobian_new - np.log(np.abs(proposed_state[label]))
+            
+        logpost_new = conditionalPosterior(observ,x0,proposed_state,\
+                         nosOfS=nosOfS,deltaS=deltaS,\
+                         gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                         nosOfObserv=nosOfObserv,sigma=sigma,\
+                         startTimeToObserv=startTimeToObserv)
+        # note the proposal is Gaussian which symmetric, so its cancelled
+        prob = np.min([1.0,logpost_new - logpost_old + jacobian_old - jacobian_new])
+        u = np.log(np.random.uniform())
+        if u<prob:
+            # accept the proposal
+            old_params = copy.copy(proposed_state)
+            logpost_old = copy.copy(logpost_new)
+            #print('old:{0}'.format(old_params))
+        #print('oldold:{0}'.format(old_params))
+        if isamp==0:
+            samples = np.array(listflatten([list(old_params),[prob]]))\
+                        .reshape((1,1+len(old_params)))
+        else:
+            samples = np.append(samples,
+                        np.array(listflatten([list(old_params),[prob]]))\
+                        .reshape((1,1+len(old_params))),
+                        axis = 0)
+        print('log_accept_prob:{0}'.format(prob))
+    return samples
+
 ################################################################
 # model parameters
 a1 = 1.0
@@ -165,37 +332,72 @@ a2 = 3.0
 alpha = 0.5
 rho = 10
 g = 3
-kappa = np.append([2.0],np.ones(g-2))
-sigma = 0.1
+kappa = []
+for i in range(g-1):
+    if i==0:
+        kappa.append(2.0)
+    else:
+        kappa.append(1.0)
+kappa = np.array(kappa)
 
-# start point
+# setup parameters
+args = get_arguments()
+parameters = [[rho],[a1],[a2],[alpha],kappa.tolist()]
+args.ode_parameters = copy.copy(np.array(listflatten(parameters)))
+parameters = copy.copy(args.ode_parameters)
+sigma = args.sigma
+nosOfS = args.nosOfS
+deltaS = args.deltaS
+nosOfObserv = args.nosOfObserv
+startTimeToObserv = args.startTimeToObserv
+
+gamma_shape = args.gamma_shape
+gamma_rate = args.gamma_rate
+
+# starting point
 x0 = np.zeros(g)
-nosOfS = 81
-deltaS = 1.0
-x = discretize_ode(a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS)
+
+############# do something from here ################
+x = discretize_ode(parameters,x0,nosOfS,deltaS)
 #plot_trajectory(x)
 
+# generate some observations for simulating
 observ = generate_observations(x,sigma)
-#plot_trajectory_points(x,observ[:,0:2])
 
-nosOfObserv = 2
-startTimeToObserv = 40
-logy = loglikelihood(observ,a1,a2,alpha,rho,kappa,x0,nosOfS,deltaS,\
-                     nosOfObserv,sigma,startTimeToObserv)
 
-parameters = [[a1],[a2],kappa.tolist(),[alpha]]
-parameters = np.array(listflatten(parameters))
-a = 2.0
-b = 1.0
-logx = loggamma(parameters,a,b)
-
-logpost = conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,kappa=[2.0,1.0],\
-                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
-                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
-
-a1_grid,a2_grid,y_grid = surface_conditionalPosterior(observ,x0,a1=1.0,a2=3.0,alpha=0.5,rho=10.0,\
-                                 kappa=[2.0,1.0],\
-                         nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
-                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40)
+#plot_trajectory_points(x,observ[:,0:nosOfObserv])
+#
+#logy = loglikelihood(observ,parameters,x0,nosOfS,deltaS,\
+#                     nosOfObserv,sigma,startTimeToObserv)
+#
+#logx = loggamma(parameters,gamma_shape,gamma_rate)
+#
+#logpost = conditionalPosterior(observ,x0,parameters,\
+#                         nosOfS=nosOfS,deltaS=deltaS,gamma_shape=gamma_shape,\
+#                         gamma_rate=gamma_rate,\
+#                         nosOfObserv=nosOfObserv,sigma=sigma,\
+#                         startTimeToObserv=startTimeToObserv)
+#
+a1_grid,a2_grid,y_grid = surface_conditionalPosterior(observ,x0,parameters,\
+                         nosOfS=nosOfS,deltaS=deltaS,\
+                         gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                         nosOfObserv=nosOfObserv,sigma=sigma,\
+                         startTimeToObserv=startTimeToObserv)
 
 plot_surface(a1_grid,a2_grid,y_grid)
+
+plot_contour(a1_grid,a2_grid,y_grid)
+
+# Use a MH algorithm to simulate these parameters
+# labels of parameters to be updated
+target_labels = copy.copy(args.target_param_label)
+for label in target_labels:
+    parameters[label] = np.random.gamma(gamma_shape,gamma_rate)
+#parameters[target_labels[0]] = 5.0
+#parameters[target_labels[1]] = 1.0
+samples = mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
+                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
+                         nosOfSamples=10000,stepsize=0.05)
+x = samples[:,target_labels[0]]
+y = samples[:,target_labels[1]]
+plot_trajectory(x,y)
