@@ -53,11 +53,27 @@ def get_arguments():
     parser.add_argument('--gamma_shape',
                         type=float,
                         default=2.0,
-                        help='Shape parameter of Gamma distribution')
+                        help='Shape parameter of Gamma distribution')    
     parser.add_argument('--gamma_rate',
                         type=float,
                         default=1.0,
                         help='Rate parameter of Gamma distribution')
+    parser.add_argument('--xlim',
+                        type=float,
+                        default=5.0,
+                        help='x-axis limit')
+    parser.add_argument('--ylim',
+                        type=float,
+                        default=10.0,
+                        help='y-axis limit')
+    parser.add_argument('--nosOfChains',
+                        type=int,
+                        default=50,
+                        help='Number of chains for parallel tempering')
+    parser.add_argument('--power',
+                        type=int,
+                        default=5.0,
+                        help='The powers')
     return parser.parse_args()
 
 def discretize_ode(parameters,x0,nosOfS,deltaS):
@@ -126,13 +142,14 @@ def lognormal(y,x,sigma):
     return logy
     
 def loglikelihood(observ,parameters,x0,nosOfS,deltaS,nosOfObserv,\
-                  sigma,startTimeToObserv):
+                  sigma,startTimeToObserv,temper):
     # To compute likelihood, we need to compute the ODE trajectory.  
     # The observed data must be corresponding to `x'.
     # The ODE trajectory is computed given these parameters.
     # startTimeToObserv: the assumed time to observe the data
     # Note: x is a S*d matrix where S is the time steps of discretization, and
     #       d is the number of latent variables.
+    # temper: the inverse temperature to represent the power posterior 
     # We assume only `a' number of variables - nosOfObserv - are observed.
     
     ## read the parameters
@@ -145,7 +162,7 @@ def loglikelihood(observ,parameters,x0,nosOfS,deltaS,nosOfObserv,\
     x = discretize_ode(parameters,x0,nosOfS,deltaS)
     xobserved = x[startTimeToObserv:,0:nosOfObserv]
     observ = observ[startTimeToObserv:,0:nosOfObserv]
-    logy = lognormal(observ,xobserved,sigma)
+    logy = temper*lognormal(observ,xobserved,sigma)
     return logy
 
 def loggamma(x,alpha,beta):
@@ -159,7 +176,7 @@ def listflatten(alist):
     # flatten sublist in list
     return [item for sublist in alist for item in sublist]
 
-def conditionalPosterior(observ,x0,parameters,\
+def conditionalPosterior(observ,x0,parameters,temper,\
                          nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
                          nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
     # this function only calculate the conditional posterior of two parameters
@@ -177,7 +194,7 @@ def conditionalPosterior(observ,x0,parameters,\
     
     # log likelihood
     logll = loglikelihood(observ,parameters,x0,nosOfS,deltaS,nosOfObserv,\
-                  sigma,startTimeToObserv)
+                  sigma,startTimeToObserv,temper)
     
     # log prior
     parameters_gamma = []
@@ -187,7 +204,7 @@ def conditionalPosterior(observ,x0,parameters,\
     # compute the conditional posterior
     return logll+logprior
 
-def surface_conditionalPosterior(observ,x0,parameters,\
+def surface_conditionalPosterior(observ,x0,parameters,temper,\
                          nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
                          nosOfObserv=2,sigma=0.1,startTimeToObserv=40):
     ## read the parameters
@@ -198,8 +215,8 @@ def surface_conditionalPosterior(observ,x0,parameters,\
     kappa = copy.copy(parameters[4:])
     
     # compute log(p(a1,a2|....)) whene varying a1 and a2
-    a1_list = list(np.arange(0.001,5,0.1))
-    a2_list = list(np.arange(0.001,5,0.1))
+    a1_list = list(np.arange(0.001,args.xlim,0.1))
+    a2_list = list(np.arange(0.001,args.ylim,0.1))
     a1_grid = np.zeros((len(a2_list),len(a1_list)))
     a2_grid = np.zeros((len(a2_list),len(a1_list)))
     y_grid = np.zeros((len(a2_list),len(a1_list)))
@@ -209,7 +226,7 @@ def surface_conditionalPosterior(observ,x0,parameters,\
             a2_grid[j][i] = a2
             parameters[args.target_param_label[0]] = a1
             parameters[args.target_param_label[1]] = a2
-            logpost = conditionalPosterior(observ,x0,parameters,\
+            logpost = conditionalPosterior(observ,x0,parameters,temper,\
                          nosOfS=nosOfS,deltaS=deltaS,\
                          gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
                          nosOfObserv=nosOfObserv,sigma=sigma,\
@@ -245,17 +262,23 @@ def plot_contour(X,Y,Z):
     cs = plt.contourf(X, Y, Z)
     #fig.colorbar(cs, ax=axs[0], format="%.2f")
     
-def plot_trajectory(x,y):
-    plt.plot(x,y,'r-',linewidth=2)
+def plot_trajectory(x,y,XX,YY,ZZ):
+    plt.figure(1)
+    N = 1000
+    cs = plt.contour(XX, YY, ZZ, N)
+    plt.clabel(cs, inline=1, fontsize=10)
+    
+    plt.plot(x,y,'r',linewidth=3)
     plt.plot(x[0],y[0],'ko',markersize=10)
     plt.plot(x[-1],y[-1],'b*',markersize=10)
     amax = np.max([np.max(x),np.max(y)])
-    plt.xlim(0.0,0.01+amax)
-    plt.ylim(0.0,0.01+amax)
+    #plt.xlim(0.0,0.01+amax)
+    #plt.ylim(0.0,0.01+amax)
 
-def mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
-                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
-                         nosOfSamples=1000,stepsize=0.05):
+def mh(observ,x0,parameters,temper,nosOfS=81,deltaS=1.0,\
+       gamma_shape=2.0,gamma_rate=1.0,\
+       nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
+       nosOfSamples=1000,stepsize=0.05):
     # We only want to simulate two parameters: 
     #    args.target_param1 and args.target_param2
     
@@ -273,7 +296,7 @@ def mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,
     #stepsize = 0.05
     
     # the old log posterior
-    logpost_old = conditionalPosterior(observ,x0,old_params,\
+    logpost_old = conditionalPosterior(observ,x0,old_params,temper,\
                          nosOfS=nosOfS,deltaS=deltaS,\
                          gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
                          nosOfObserv=nosOfObserv,sigma=sigma,\
@@ -295,18 +318,20 @@ def mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,
             # but we still need to compute Jacobian=1/|param|
             # Therefore r=log(p(param_new))-log(p(param_old))+log(1/|param_old|)
             #             -log(1/|param_new|)
-            epsilon = np.random.normal(loc=np.log(old_params[label]),scale=stepsize)
+            epsilon = np.random.normal(loc=np.log(old_params[label]),\
+                                       scale=stepsize)
             proposed_state[label] = np.exp(epsilon)
             jacobian_old = jacobian_old - np.log(np.abs(old_params[label]))
             jacobian_new = jacobian_new - np.log(np.abs(proposed_state[label]))
             
-        logpost_new = conditionalPosterior(observ,x0,proposed_state,\
+        logpost_new = conditionalPosterior(observ,x0,proposed_state,temper,\
                          nosOfS=nosOfS,deltaS=deltaS,\
                          gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
                          nosOfObserv=nosOfObserv,sigma=sigma,\
                          startTimeToObserv=startTimeToObserv)
         # note the proposal is Gaussian which symmetric, so its cancelled
-        prob = np.min([1.0,logpost_new - logpost_old + jacobian_old - jacobian_new])
+        prob = np.min([1.0,\
+                       logpost_new - logpost_old + jacobian_old - jacobian_new])
         u = np.log(np.random.uniform())
         if u<prob:
             # accept the proposal
@@ -315,15 +340,166 @@ def mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,
             #print('old:{0}'.format(old_params))
         #print('oldold:{0}'.format(old_params))
         if isamp==0:
-            samples = np.array(listflatten([list(old_params),[prob]]))\
-                        .reshape((1,1+len(old_params)))
+            samples = np.array(listflatten([list(old_params)]))\
+                        .reshape((1,len(old_params)))
         else:
             samples = np.append(samples,
-                        np.array(listflatten([list(old_params),[prob]]))\
-                        .reshape((1,1+len(old_params))),
+                        np.array(listflatten([list(old_params)]))\
+                        .reshape((1,len(old_params))),
                         axis = 0)
         print('log_accept_prob:{0}'.format(prob))
     return samples
+
+def mh_onestep(observ,x0,parameters,temper,nosOfS=81,deltaS=1.0,\
+       gamma_shape=2.0,gamma_rate=1.0,\
+       nosOfObserv=2,sigma=0.1,startTimeToObserv=40,stepsize=0.05):
+    # We only want to simulate two parameters: 
+    #    args.target_param1 and args.target_param2
+    
+    # This function only move one step
+    
+    # labels of parameters to be updated
+    target_labels = copy.copy(args.target_param_label)
+    
+    # the old state
+    old_params = copy.copy(parameters)
+    
+    # stepsize
+    #stepsize = 0.05
+    
+    # the old log posterior
+    logpost_old = conditionalPosterior(observ,x0,old_params,temper,\
+                         nosOfS=nosOfS,deltaS=deltaS,\
+                         gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                         nosOfObserv=nosOfObserv,sigma=sigma,\
+                         startTimeToObserv=startTimeToObserv)
+    
+    # now propose a new state
+    proposed_state = copy.copy(old_params)
+    jacobian_old = 0.0
+    jacobian_new = 0.0
+    #print(old_params)
+    for label in target_labels:
+        # Note: we use a function to define the proposals because the 
+        # parameters have to be positive so param=exp(epsilon) 
+        # where we instead draw samples for epsilon~q(epsilon_new|epsilon_old)
+        # where epsilon=log(param). So epsilon is a symmetric Gaussian which
+        # could be cancelled when computing acceptance probability, 
+        # but we still need to compute Jacobian=1/|param|
+        # Therefore r=log(p(param_new))-log(p(param_old))+log(1/|param_old|)
+        #             -log(1/|param_new|)
+        epsilon = np.random.normal(loc=np.log(old_params[label]),\
+                                   scale=stepsize)
+        proposed_state[label] = np.exp(epsilon)
+        jacobian_old = jacobian_old - np.log(np.abs(old_params[label]))
+        jacobian_new = jacobian_new - np.log(np.abs(proposed_state[label]))
+        
+    logpost_new = conditionalPosterior(observ,x0,proposed_state,temper,\
+                     nosOfS=nosOfS,deltaS=deltaS,\
+                     gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                     nosOfObserv=nosOfObserv,sigma=sigma,\
+                     startTimeToObserv=startTimeToObserv)
+    # note the proposal is Gaussian which symmetric, so its cancelled
+    prob = np.min([1.0,\
+                   logpost_new - logpost_old + jacobian_old - jacobian_new])
+    u = np.log(np.random.uniform())
+    if u<prob:
+        # accept the proposal
+        old_params = copy.copy(proposed_state)
+        logpost_old = copy.copy(logpost_new)
+        old_params[-1] = copy.copy(logpost_new)
+    #print('log_accept_prob:{0}'.format(prob))
+#    asample = np.array(listflatten([old_params,[logpost_old]]))#.\
+                #reshape((1,1+len(old_params)))
+    return old_params
+
+### Parallel tempering
+def parallel_tempering(observ,x0,nosOfS=81,deltaS=1.0,\
+       gamma_shape=2.0,gamma_rate=1.0,\
+       nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
+       nosOfSamples=1000,stepsize=0.05):
+    
+    # The population of samples
+    numberOfChains = args.nosOfChains
+    populationOfSamples = {}
+    
+    # The powers
+    powers = np.power(np.arange(0,numberOfChains+1,1.0)/numberOfChains,\
+                      args.power)
+    
+    # the labels for those parameters to simulate
+    target_labels = copy.copy(args.target_param_label)
+    
+    # Initialise the population parameters    
+    parameters = copy.copy(np.array(listflatten([args.ode_parameters,[0.0]])))
+    for temper in powers:        
+        for label in target_labels:
+            parameters[label] = copy.copy(np.random.gamma(gamma_shape,\
+                                          gamma_rate))
+            if temper==1.0:
+                parameters[label] = 4.0
+        populationOfSamples[temper] = copy.copy(parameters.\
+                                        reshape((1,len(parameters))))
+        
+    # update each chain in parallel and also swap chains
+    for nsamp in range(nosOfSamples):
+        print('nos of samples: {0}'.format(nsamp))
+        probswitch = np.random.uniform()
+        if probswitch < 0.5:
+            # parallel step: update each chain
+            for ichain,temper in enumerate(powers):
+                #print('temper:{0}'.format(temper))
+                parameters = copy.copy(populationOfSamples[temper][-1,:])
+                sample = mh_onestep(observ,x0,parameters,temper,\
+                             nosOfS=nosOfS,deltaS=deltaS,\
+                             gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                             nosOfObserv=nosOfObserv,sigma=sigma,\
+                             startTimeToObserv=startTimeToObserv,\
+                             stepsize=stepsize)
+                asample = copy.copy(populationOfSamples[temper])
+                asample = np.append(asample,sample.\
+                                    reshape((1,len(sample))),axis=0)
+                populationOfSamples[temper] = copy.copy(asample)
+        else:
+            # swap neighbor chains
+            # select a neighbour pair
+            ichain = np.random.choice(np.arange(0,numberOfChains))
+            
+            # a sample of the i^th chain
+            sample_ichain = populationOfSamples[powers[ichain]][-1,:]
+            param_i = copy.copy(sample_ichain[0:-1])
+            logpost_i = copy.copy(sample_ichain[-1:])
+            
+            # a sample of the j=i+1 chain
+            sample_jchain = populationOfSamples[powers[ichain+1]][-1,:]
+            param_j = copy.copy(sample_jchain[0:-1])
+            logpost_j = copy.copy(sample_jchain[-1:])
+            
+            # we want to swap chain i and j
+            logpost_ij=conditionalPosterior(observ,x0,param_j,\
+                                            powers[ichain],\
+                     nosOfS=nosOfS,deltaS=deltaS,\
+                     gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                     nosOfObserv=nosOfObserv,sigma=sigma,\
+                     startTimeToObserv=startTimeToObserv)
+            logpost_ji=conditionalPosterior(observ,x0,param_i,\
+                                            powers[ichain+1],\
+                     nosOfS=nosOfS,deltaS=deltaS,\
+                     gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
+                     nosOfObserv=nosOfObserv,sigma=sigma,\
+                     startTimeToObserv=startTimeToObserv)
+            
+            #compute the swap probability
+            r = logpost_ij + logpost_ji - logpost_i - logpost_j
+            prob = np.min([1.0, r])
+            u = np.log(np.random.uniform())
+            if u<prob:
+                # accept to swap chains
+                populationOfSamples[powers[ichain]][-1,:] = \
+                np.array(listflatten([list(param_j),[logpost_ij]]))
+                populationOfSamples[powers[ichain+1]][-1,:] = \
+                np.array(listflatten([list(param_i),[logpost_ji]]))
+    return populationOfSamples
 
 ################################################################
 # model parameters
@@ -357,6 +533,9 @@ gamma_rate = args.gamma_rate
 # starting point
 x0 = np.zeros(g)
 
+# inverse temperature
+temper = 1.0
+
 ############# do something from here ################
 x = discretize_ode(parameters,x0,nosOfS,deltaS)
 #plot_trajectory(x)
@@ -372,32 +551,58 @@ observ = generate_observations(x,sigma)
 #
 #logx = loggamma(parameters,gamma_shape,gamma_rate)
 #
-#logpost = conditionalPosterior(observ,x0,parameters,\
+#logpost = conditionalPosterior(observ,x0,parameters,temper,\
 #                         nosOfS=nosOfS,deltaS=deltaS,gamma_shape=gamma_shape,\
 #                         gamma_rate=gamma_rate,\
 #                         nosOfObserv=nosOfObserv,sigma=sigma,\
 #                         startTimeToObserv=startTimeToObserv)
 #
 a1_grid,a2_grid,y_grid = surface_conditionalPosterior(observ,x0,parameters,\
+                         temper,\
                          nosOfS=nosOfS,deltaS=deltaS,\
                          gamma_shape=gamma_shape,gamma_rate=gamma_rate,\
                          nosOfObserv=nosOfObserv,sigma=sigma,\
                          startTimeToObserv=startTimeToObserv)
 
-plot_surface(a1_grid,a2_grid,y_grid)
+#plot_surface(a1_grid,a2_grid,y_grid)
 
-plot_contour(a1_grid,a2_grid,y_grid)
+#plot_contour(a1_grid,a2_grid,y_grid)
 
 # Use a MH algorithm to simulate these parameters
 # labels of parameters to be updated
-target_labels = copy.copy(args.target_param_label)
-for label in target_labels:
-    parameters[label] = np.random.gamma(gamma_shape,gamma_rate)
-#parameters[target_labels[0]] = 5.0
-#parameters[target_labels[1]] = 1.0
-samples = mh(observ,x0,parameters,nosOfS=81,deltaS=1.0,gamma_shape=2.0,gamma_rate=1.0,\
-                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
-                         nosOfSamples=10000,stepsize=0.05)
-x = samples[:,target_labels[0]]
-y = samples[:,target_labels[1]]
-plot_trajectory(x,y)
+
+#target_labels = copy.copy(args.target_param_label)
+#for label in target_labels:
+#    parameters[label] = np.random.gamma(gamma_shape,gamma_rate)
+#parameters[target_labels[0]] = 4.0
+#parameters[target_labels[1]] = 4.0
+#samples = mh(observ,x0,parameters,temper,nosOfS=81,deltaS=1.0,\
+#                         gamma_shape=2.0,gamma_rate=1.0,\
+#                         nosOfObserv=2,sigma=0.1,startTimeToObserv=40,\
+#                         nosOfSamples=20000,stepsize=0.05)
+#x = samples[:,target_labels[0]]
+#y = samples[:,target_labels[1]]
+#plot_trajectory(x,y,a1_grid,a2_grid,y_grid)
+
+# parallel tempering 
+populationOfSample = parallel_tempering(observ,x0,\
+                                        nosOfS=nosOfS,deltaS=deltaS,\
+                                        gamma_shape=gamma_shape,\
+                                        gamma_rate=gamma_rate,\
+                                        nosOfObserv=nosOfObserv,\
+                                        sigma=sigma,\
+                                        startTimeToObserv=startTimeToObserv,\
+                                        nosOfSamples=100,stepsize=0.05)
+
+## plot all the population trajectories
+#for nsamp in populationOfSample:
+#    samples = copy.copy(populationOfSample[nsamp])
+#    x = copy.copy(samples[:,target_labels[0]])
+#    y = copy.copy(samples[:,target_labels[1]])
+#    plot_trajectory(x,y,a1_grid,a2_grid,y_grid)
+    
+# only plot the trajectory of target distribution
+samples = copy.copy(populationOfSample[1.0])
+x = copy.copy(samples[:,target_labels[0]])
+y = copy.copy(samples[:,target_labels[1]])
+plot_trajectory(x,y,a1_grid,a2_grid,y_grid)
