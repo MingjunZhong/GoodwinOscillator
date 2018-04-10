@@ -4,5 +4,4 @@ The model is defined by Goodwin (1965). The model is nonlinear ODE. We attempt t
 
 This code is to employ Metropolis-Hastings algorithms and Parallel Tempering technique to simulate the posterior of the ODE model parameters.
 
-The Goodwin oscillator model:
-$dx_1/dt$
+The parameters to be simulated: \alpha, a_1, a_2, k_1, k_2, ...
